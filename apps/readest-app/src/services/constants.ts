@@ -150,6 +150,7 @@ export const DEFAULT_BOOK_LAYOUT: BookLayout = {
   rtl: false,
   scrollingOverlap: 0,
   allowScript: false,
+  enableSwipeToToggleMenu: true,
 };
 
 export const DEFAULT_BOOK_STYLE: BookStyle = {

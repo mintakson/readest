@@ -121,17 +121,30 @@ export const useTouchEvent = (
       const deltaY = touchEnd.screenY - touchStart.screenY;
       const deltaX = touchEnd.screenX - touchStart.screenX;
       const deltaT = touchEndTime && touchStartTime ? touchEndTime - touchStartTime : 0;
+
+      // Calculate swipe velocity (pixels per millisecond)
+      const velocityY = deltaT > 0 ? Math.abs(deltaY) / deltaT : 0;
+
+      // Minimum swipe distance increased from 10px to 50px to prevent accidental triggers
+      const MIN_SWIPE_DISTANCE = 50;
+      // Minimum swipe velocity (0.3 px/ms = 300 px/s) to distinguish intentional swipe from scroll
+      const MIN_SWIPE_VELOCITY = 0.3;
+
       // also check for deltaX to prevent swipe page turn from triggering the toggle
       if (
-        deltaY < -10 &&
+        deltaY < -MIN_SWIPE_DISTANCE &&
         Math.abs(deltaY) > Math.abs(deltaX) * 2 &&
-        Math.abs(deltaX) < windowWidth * 0.3
+        Math.abs(deltaX) < windowWidth * 0.3 &&
+        velocityY > MIN_SWIPE_VELOCITY // require intentional fast swipe
       ) {
         // swipe up to toggle the header bar and the footer bar, only for horizontal page mode
+        // Fixed: For PDFs/fixed-layout books, completely disable menu toggle to prevent
+        // unintended menu opening when scrolling in zoomed view
         if (
-          !viewSettings!.scrolled && // not scrolled
+          viewSettings!.enableSwipeToToggleMenu && // user preference enabled
+          !viewSettings!.scrolled && // not scrolled mode
           !viewSettings!.vertical && // not vertical
-          (!bookData.isFixedLayout || viewSettings.zoomLevel <= 100) // for fixed layout, not when zoomed in
+          !bookData.isFixedLayout // disable for all fixed-layout (PDF) books
         ) {
           setHoveredBookKey(hoveredBookKey ? null : bookKey);
         }

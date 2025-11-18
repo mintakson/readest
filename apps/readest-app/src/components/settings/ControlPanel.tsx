@@ -33,6 +33,9 @@ const ControlPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterRes
   const [fullscreenClickArea, setFullscreenClickArea] = useState(viewSettings.fullscreenClickArea);
   const [swapClickArea, setSwapClickArea] = useState(viewSettings.swapClickArea);
   const [isDisableDoubleClick, setIsDisableDoubleClick] = useState(viewSettings.disableDoubleClick);
+  const [enableSwipeToToggleMenu, setEnableSwipeToToggleMenu] = useState(
+    viewSettings.enableSwipeToToggleMenu,
+  );
   const [animated, setAnimated] = useState(viewSettings.animated);
   const [isEink, setIsEink] = useState(viewSettings.isEink);
   const [autoScreenBrightness, setAutoScreenBrightness] = useState(settings.autoScreenBrightness);
@@ -51,6 +54,7 @@ const ControlPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterRes
       animated: setAnimated,
       isEink: setIsEink,
       allowScript: setAllowScript,
+      enableSwipeToToggleMenu: setEnableSwipeToToggleMenu,
     });
   };
 
@@ -103,6 +107,18 @@ const ControlPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterRes
     saveViewSettings(envConfig, bookKey, 'disableDoubleClick', isDisableDoubleClick, false, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDisableDoubleClick]);
+
+  useEffect(() => {
+    saveViewSettings(
+      envConfig,
+      bookKey,
+      'enableSwipeToToggleMenu',
+      enableSwipeToToggleMenu,
+      false,
+      false,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enableSwipeToToggleMenu]);
 
   useEffect(() => {
     saveViewSettings(envConfig, bookKey, 'fullscreenClickArea', fullscreenClickArea, false, false);
@@ -238,15 +254,28 @@ const ControlPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterRes
               />
             </div>
             {appService?.isMobileApp && (
-              <div className='config-item'>
-                <span className=''>{_('Volume Keys for Page Flip')}</span>
-                <input
-                  type='checkbox'
-                  className='toggle'
-                  checked={volumeKeysToFlip}
-                  onChange={() => setVolumeKeysToFlip(!volumeKeysToFlip)}
-                />
-              </div>
+              <>
+                <div className='config-item'>
+                  <span className=''>
+                    {_('Swipe Up to Toggle Menu')}
+                  </span>
+                  <input
+                    type='checkbox'
+                    className='toggle'
+                    checked={enableSwipeToToggleMenu}
+                    onChange={() => setEnableSwipeToToggleMenu(!enableSwipeToToggleMenu)}
+                  />
+                </div>
+                <div className='config-item'>
+                  <span className=''>{_('Volume Keys for Page Flip')}</span>
+                  <input
+                    type='checkbox'
+                    className='toggle'
+                    checked={volumeKeysToFlip}
+                    onChange={() => setVolumeKeysToFlip(!volumeKeysToFlip)}
+                  />
+                </div>
+              </>
             )}
           </div>
         </div>

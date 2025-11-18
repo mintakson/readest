@@ -114,6 +114,7 @@ export interface BookLayout {
   rtl: boolean;
   scrollingOverlap: number;
   allowScript: boolean;
+  enableSwipeToToggleMenu: boolean;
 }
 
 export interface BookStyle {
