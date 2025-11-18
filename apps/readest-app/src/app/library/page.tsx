@@ -629,7 +629,7 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
   return (
     <div
       ref={pageRef}
-      aria-label='Your Library'
+      aria-label='Your Media'
       className={clsx(
         'library-page text-base-content flex h-[100vh] select-none flex-col overflow-hidden',
         viewSettings?.isEink ? 'bg-base-100' : 'bg-base-200',
@@ -746,10 +746,10 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
             <DropIndicator />
             <div className='hero-content text-neutral-content text-center'>
               <div className='max-w-md'>
-                <h1 className='mb-5 text-5xl font-bold'>{_('Your Library')}</h1>
+                <h1 className='mb-5 text-5xl font-bold'>{_('Your Media')}</h1>
                 <p className='mb-5'>
                   {_(
-                    'Welcome to your library. You can import your books here and read them anytime.',
+                    'Welcome to your media. You can import your books here and read them anytime.',
                   )}
                 </p>
                 <button className='btn btn-primary rounded-xl' onClick={handleImportBooks}>

@@ -491,7 +491,7 @@
       "notes": [
         "🛠️ Fixed an issue where books without cover images can not be synced across devices",
         "📱 Added in-app update support for Android",
-        "📚 You can now sort books by title or author in your library"
+        "📚 You can now sort books by title or author in your media"
       ]
     },
     "0.9.33": {
