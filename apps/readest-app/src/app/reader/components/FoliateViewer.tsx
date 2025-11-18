@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { BookDoc, getDirection } from '@/libs/document';
 import { BookConfig } from '@/types/book';
 import { FoliateView, wrappedFoliateView } from '@/types/view';
@@ -20,6 +20,8 @@ import { useAutoFocus } from '@/hooks/useAutoFocus';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useEinkMode } from '@/hooks/useEinkMode';
 import { useKOSync } from '../hooks/useKOSync';
+import { performanceMonitor } from '@/utils/performance';
+import { memoryManager } from '@/utils/memoryManager';
 import {
   applyFixedlayoutStyles,
   applyImageStyle,
@@ -92,6 +94,7 @@ const FoliateViewer: React.FC<{
   const [toastMessage, setToastMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const docLoaded = useRef(false);
+  const eventListenersRef = useRef<Array<{ element: any; event: string; handler: any }>>([]);
 
   useAutoFocus<HTMLDivElement>({ ref: containerRef });
 
@@ -218,14 +221,36 @@ const FoliateViewer: React.FC<{
         // and then used by useMouseEvent and useTouchEvent
         // and more gesture events can be detected in the iframeEventHandlers
         detail.doc.isEventListenersAdded = true;
-        detail.doc.addEventListener('keydown', handleKeydown.bind(null, bookKey));
-        detail.doc.addEventListener('mousedown', handleMousedown.bind(null, bookKey));
-        detail.doc.addEventListener('mouseup', handleMouseup.bind(null, bookKey));
-        detail.doc.addEventListener('click', handleClick.bind(null, bookKey, doubleClickDisabled));
-        detail.doc.addEventListener('wheel', handleWheel.bind(null, bookKey));
-        detail.doc.addEventListener('touchstart', handleTouchStart.bind(null, bookKey));
-        detail.doc.addEventListener('touchmove', handleTouchMove.bind(null, bookKey));
-        detail.doc.addEventListener('touchend', handleTouchEnd.bind(null, bookKey));
+
+        const keydownHandler = handleKeydown.bind(null, bookKey);
+        const mousedownHandler = handleMousedown.bind(null, bookKey);
+        const mouseupHandler = handleMouseup.bind(null, bookKey);
+        const clickHandler = handleClick.bind(null, bookKey, doubleClickDisabled);
+        const wheelHandler = handleWheel.bind(null, bookKey);
+        const touchstartHandler = handleTouchStart.bind(null, bookKey);
+        const touchmoveHandler = handleTouchMove.bind(null, bookKey);
+        const touchendHandler = handleTouchEnd.bind(null, bookKey);
+
+        detail.doc.addEventListener('keydown', keydownHandler);
+        detail.doc.addEventListener('mousedown', mousedownHandler);
+        detail.doc.addEventListener('mouseup', mouseupHandler);
+        detail.doc.addEventListener('click', clickHandler);
+        detail.doc.addEventListener('wheel', wheelHandler);
+        detail.doc.addEventListener('touchstart', touchstartHandler);
+        detail.doc.addEventListener('touchmove', touchmoveHandler);
+        detail.doc.addEventListener('touchend', touchendHandler);
+
+        // Track for cleanup
+        eventListenersRef.current.push(
+          { element: detail.doc, event: 'keydown', handler: keydownHandler },
+          { element: detail.doc, event: 'mousedown', handler: mousedownHandler },
+          { element: detail.doc, event: 'mouseup', handler: mouseupHandler },
+          { element: detail.doc, event: 'click', handler: clickHandler },
+          { element: detail.doc, event: 'wheel', handler: wheelHandler },
+          { element: detail.doc, event: 'touchstart', handler: touchstartHandler },
+          { element: detail.doc, event: 'touchmove', handler: touchmoveHandler },
+          { element: detail.doc, event: 'touchend', handler: touchendHandler }
+        );
       }
     }
   };
@@ -273,6 +298,34 @@ const FoliateViewer: React.FC<{
     onRendererRelocate: docRelocateHandler,
   });
 
+  // Memory cleanup on component unmount
+  useEffect(() => {
+    const cleanup = () => {
+      // Remove all tracked event listeners
+      eventListenersRef.current.forEach(({ element, event, handler }) => {
+        try {
+          element?.removeEventListener(event, handler);
+        } catch (e) {
+          console.warn('Failed to remove event listener:', e);
+        }
+      });
+      eventListenersRef.current = [];
+
+      // Clear view reference
+      viewRef.current = null;
+
+      performanceMonitor.logWarning(`Book viewer unmounted: ${bookKey}`);
+    };
+
+    // Register cleanup with memory manager
+    const unregister = memoryManager.registerCleanupCallback(cleanup);
+
+    return () => {
+      cleanup();
+      unregister();
+    };
+  }, [bookKey]);
+
   useEffect(() => {
     if (isViewCreated.current) return;
     isViewCreated.current = true;
@@ -280,11 +333,15 @@ const FoliateViewer: React.FC<{
     setTimeout(() => setLoading(true), 200);
 
     const openBook = async () => {
-      console.log('Opening book', bookKey);
-      await import('foliate-js/view.js');
-      const view = wrappedFoliateView(document.createElement('foliate-view') as FoliateView);
-      view.id = `foliate-view-${bookKey}`;
-      containerRef.current?.appendChild(view);
+      const metricName = `viewer-init:${bookKey}`;
+      performanceMonitor.start(metricName);
+
+      try {
+        console.log('Opening book', bookKey);
+        await import('foliate-js/view.js');
+        const view = wrappedFoliateView(document.createElement('foliate-view') as FoliateView);
+        view.id = `foliate-view-${bookKey}`;
+        containerRef.current?.appendChild(view);
 
       const viewSettings = getViewSettings(bookKey)!;
       const writingMode = viewSettings.writingMode;
@@ -366,6 +423,18 @@ const FoliateViewer: React.FC<{
         await view.goToFraction(0);
       }
       setViewInited(bookKey, true);
+
+        const duration = performanceMonitor.end(metricName);
+        if (duration && duration > 2000) {
+          performanceMonitor.logWarning(`Slow viewer initialization: ${(duration / 1000).toFixed(2)}s`);
+        }
+        performanceMonitor.takeMemorySnapshot();
+      } catch (error) {
+        performanceMonitor.end(metricName, { error: String(error) });
+        performanceMonitor.logError(error instanceof Error ? error : new Error(String(error)));
+        console.error('Failed to open book viewer:', error);
+        throw error;
+      }
     };
 
     openBook();

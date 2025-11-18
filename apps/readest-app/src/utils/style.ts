@@ -583,11 +583,21 @@ export const applyTranslationStyle = (viewSettings: ViewSettings) => {
   document.head.appendChild(styleElement);
 };
 
+import { stylesheetCache } from './styleCache';
+
 export const transformStylesheet = (vw: number, vh: number, css: string) => {
+  // Check cache first
+  const cached = stylesheetCache.get(vw, vh, css);
+  if (cached !== null) {
+    return cached;
+  }
+
   const isMobile = ['ios', 'android'].includes(getOSPlatform());
   const fontScale = isMobile ? 1.25 : 1;
   const ruleRegex = /([^{]+)({[^}]+})/g;
-  css = css.replace(ruleRegex, (match, selector, block) => {
+  let transformedCss = css;
+
+  transformedCss = transformedCss.replace(ruleRegex, (match, selector, block) => {
     const hasTextAlignCenter = /text-align\s*:\s*center\s*[;$]/.test(block);
     const hasTextIndentZero = /text-indent\s*:\s*0(?:\.0+)?(?:px|em|rem|%)?\s*[;$]/.test(block);
 
@@ -603,7 +613,7 @@ export const transformStylesheet = (vw: number, vh: number, css: string) => {
   });
 
   // Process duokan-bleed
-  css = css.replace(ruleRegex, (_, selector, block) => {
+  transformedCss = transformedCss.replace(ruleRegex, (_, selector, block) => {
     const directions = ['top', 'bottom', 'left', 'right'];
     for (const dir of directions) {
       const bleedRegex = new RegExp(`duokan-bleed\\s*:\\s*[^;]*${dir}[^;]*;`);
@@ -621,7 +631,7 @@ export const transformStylesheet = (vw: number, vh: number, css: string) => {
   // replace absolute font sizes with rem units
   // replace vw and vh as they cause problems with layout
   // replace hardcoded colors
-  css = css
+  transformedCss = transformedCss
     .replace(/font-size\s*:\s*xx-small/gi, 'font-size: 0.6rem')
     .replace(/font-size\s*:\s*x-small/gi, 'font-size: 0.75rem')
     .replace(/font-size\s*:\s*small/gi, 'font-size: 0.875rem')
@@ -646,7 +656,11 @@ export const transformStylesheet = (vw: number, vh: number, css: string) => {
     .replace(/([\s;])color\s*:\s*#000000/gi, '$1color: var(--theme-fg-color)')
     .replace(/([\s;])color\s*:\s*#000/gi, '$1color: var(--theme-fg-color)')
     .replace(/([\s;])color\s*:\s*rgb\(0,\s*0,\s*0\)/gi, '$1color: var(--theme-fg-color)');
-  return css;
+
+  // Store in cache
+  stylesheetCache.set(vw, vh, css, transformedCss);
+
+  return transformedCss;
 };
 
 export const applyThemeModeClass = (document: Document, isDarkMode: boolean) => {

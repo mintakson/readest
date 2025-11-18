@@ -1,6 +1,8 @@
 import { BookFormat } from '@/types/book';
 import { Contributor, Identifier, LanguageMap } from '@/utils/book';
 import * as epubcfi from 'foliate-js/epubcfi.js';
+import { performanceMonitor } from '@/utils/performance';
+import { crashTracker } from '@/services/crashTracker';
 
 export const CFI = epubcfi;
 
@@ -81,11 +83,25 @@ export const EXTS: Record<BookFormat, string> = {
   FBZ: 'fbz',
 };
 
+export interface LoadingProgress {
+  stage: 'detecting' | 'parsing' | 'processing' | 'complete';
+  progress: number; // 0-100
+  message?: string;
+}
+
 export class DocumentLoader {
   private file: File;
+  private onProgress?: (progress: LoadingProgress) => void;
 
-  constructor(file: File) {
+  constructor(file: File, onProgress?: (progress: LoadingProgress) => void) {
     this.file = file;
+    this.onProgress = onProgress;
+  }
+
+  private reportProgress(stage: LoadingProgress['stage'], progress: number, message?: string): void {
+    if (this.onProgress) {
+      this.onProgress({ stage, progress, message });
+    }
   }
 
   private async isZip(): Promise<boolean> {
@@ -172,55 +188,115 @@ export class DocumentLoader {
   }
 
   public async open(): Promise<{ book: BookDoc; format: BookFormat }> {
-    let book = null;
-    let format: BookFormat = 'EPUB';
-    if (!this.file.size) {
-      throw new Error('File is empty');
-    }
-    if (await this.isZip()) {
-      const loader = await this.makeZipLoader();
-      const { entries } = loader;
+    const metricName = `book-load:${this.file.name}`;
+    performanceMonitor.start(metricName, {
+      fileSize: this.file.size,
+      fileName: this.file.name,
+    });
 
-      if (this.isCBZ()) {
-        const { makeComicBook } = await import('foliate-js/comic-book.js');
-        book = await makeComicBook(loader, this.file);
-        format = 'CBZ';
-      } else if (this.isFBZ()) {
-        const entry = entries.find((entry) => entry.filename.endsWith(`.${EXTS.FB2}`));
-        const blob = await loader.loadBlob((entry ?? entries[0]!).filename);
+    try {
+      this.reportProgress('detecting', 5, 'Detecting file format...');
+
+      let book = null;
+      let format: BookFormat = 'EPUB';
+
+      if (!this.file.size) {
+        throw new Error('File is empty');
+      }
+
+      // Add memory check for large files
+      if (this.file.size > 100 * 1024 * 1024) {
+        // 100MB
+        performanceMonitor.logWarning(
+          `Loading large file: ${(this.file.size / 1024 / 1024).toFixed(2)}MB`
+        );
+        performanceMonitor.takeMemorySnapshot();
+      }
+
+      if (await this.isZip()) {
+        this.reportProgress('parsing', 20, 'Parsing ZIP archive...');
+        const loader = await this.makeZipLoader();
+        const { entries } = loader;
+
+        if (this.isCBZ()) {
+          this.reportProgress('processing', 40, 'Loading comic book...');
+          const { makeComicBook } = await import('foliate-js/comic-book.js');
+          book = await makeComicBook(loader, this.file);
+          format = 'CBZ';
+        } else if (this.isFBZ()) {
+          this.reportProgress('processing', 40, 'Loading FB2 from archive...');
+          const entry = entries.find((entry) => entry.filename.endsWith(`.${EXTS.FB2}`));
+          const blob = await loader.loadBlob((entry ?? entries[0]!).filename);
+          const { makeFB2 } = await import('foliate-js/fb2.js');
+          book = await makeFB2(blob);
+          format = 'FBZ';
+        } else {
+          this.reportProgress('processing', 40, 'Loading EPUB...');
+          const { EPUB } = await import('foliate-js/epub.js');
+          book = await new EPUB(loader).init();
+          format = 'EPUB';
+        }
+      } else if (await this.isPDF()) {
+        this.reportProgress('processing', 40, 'Loading PDF...');
+        const { makePDF } = await import('foliate-js/pdf.js');
+        book = await makePDF(this.file);
+        format = 'PDF';
+      } else if (await (await import('foliate-js/mobi.js')).isMOBI(this.file)) {
+        this.reportProgress('processing', 40, 'Loading MOBI...');
+        const fflate = await import('foliate-js/vendor/fflate.js');
+        const { MOBI } = await import('foliate-js/mobi.js');
+        book = await new MOBI({ unzlib: fflate.unzlibSync }).open(this.file);
+        const ext = this.file.name.split('.').pop()?.toLowerCase();
+        switch (ext) {
+          case 'azw':
+            format = 'AZW';
+            break;
+          case 'azw3':
+            format = 'AZW3';
+            break;
+          default:
+            format = 'MOBI';
+        }
+      } else if (this.isFB2()) {
+        this.reportProgress('processing', 40, 'Loading FB2...');
         const { makeFB2 } = await import('foliate-js/fb2.js');
-        book = await makeFB2(blob);
-        format = 'FBZ';
-      } else {
-        const { EPUB } = await import('foliate-js/epub.js');
-        book = await new EPUB(loader).init();
-        format = 'EPUB';
+        book = await makeFB2(this.file);
+        format = 'FB2';
       }
-    } else if (await this.isPDF()) {
-      const { makePDF } = await import('foliate-js/pdf.js');
-      book = await makePDF(this.file);
-      format = 'PDF';
-    } else if (await (await import('foliate-js/mobi.js')).isMOBI(this.file)) {
-      const fflate = await import('foliate-js/vendor/fflate.js');
-      const { MOBI } = await import('foliate-js/mobi.js');
-      book = await new MOBI({ unzlib: fflate.unzlibSync }).open(this.file);
-      const ext = this.file.name.split('.').pop()?.toLowerCase();
-      switch (ext) {
-        case 'azw':
-          format = 'AZW';
-          break;
-        case 'azw3':
-          format = 'AZW3';
-          break;
-        default:
-          format = 'MOBI';
+
+      this.reportProgress('complete', 100, 'Book loaded successfully');
+
+      const duration = performanceMonitor.end(metricName, { format });
+
+      // Log slow loads
+      if (duration && duration > 3000) {
+        performanceMonitor.logWarning(
+          `Slow book load: ${this.file.name} took ${(duration / 1000).toFixed(2)}s`
+        );
       }
-    } else if (this.isFB2()) {
-      const { makeFB2 } = await import('foliate-js/fb2.js');
-      book = await makeFB2(this.file);
-      format = 'FB2';
+
+      // Take final memory snapshot
+      performanceMonitor.takeMemorySnapshot();
+
+      return { book, format } as { book: BookDoc; format: BookFormat };
+    } catch (error) {
+      this.reportProgress('complete', 0, `Failed to load book: ${error}`);
+
+      performanceMonitor.end(metricName, { error: String(error) });
+
+      crashTracker.reportCrash({
+        type: 'error',
+        message: `Failed to load book: ${this.file.name}`,
+        stack: error instanceof Error ? error.stack : undefined,
+        metadata: {
+          fileSize: this.file.size,
+          fileName: this.file.name,
+          fileType: this.file.type,
+        },
+      });
+
+      throw error;
     }
-    return { book, format } as { book: BookDoc; format: BookFormat };
   }
 }
 
