@@ -20,6 +20,7 @@ import { useAutoFocus } from '@/hooks/useAutoFocus';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useEinkMode } from '@/hooks/useEinkMode';
 import { useKOSync } from '../hooks/useKOSync';
+import { performanceMonitor } from '@/utils/performance';
 import {
   applyFixedlayoutStyles,
   applyImageStyle,
@@ -280,11 +281,16 @@ const FoliateViewer: React.FC<{
     setTimeout(() => setLoading(true), 200);
 
     const openBook = async () => {
-      console.log('Opening book', bookKey);
-      await import('foliate-js/view.js');
-      const view = wrappedFoliateView(document.createElement('foliate-view') as FoliateView);
-      view.id = `foliate-view-${bookKey}`;
-      containerRef.current?.appendChild(view);
+      const endMeasure = performanceMonitor.startMeasure(`open-book-${bookKey}`);
+
+      try {
+        console.log('Opening book', bookKey);
+        performanceMonitor.logMemoryUsage('before-open-book');
+
+        await import('foliate-js/view.js');
+        const view = wrappedFoliateView(document.createElement('foliate-view') as FoliateView);
+        view.id = `foliate-view-${bookKey}`;
+        containerRef.current?.appendChild(view);
 
       const viewSettings = getViewSettings(bookKey)!;
       const writingMode = viewSettings.writingMode;
@@ -359,16 +365,28 @@ const FoliateViewer: React.FC<{
       }
       applyMarginAndGap();
 
-      const lastLocation = config.location;
-      if (lastLocation) {
-        await view.init({ lastLocation });
-      } else {
-        await view.goToFraction(0);
+        const lastLocation = config.location;
+        if (lastLocation) {
+          await view.init({ lastLocation });
+        } else {
+          await view.goToFraction(0);
+        }
+        setViewInited(bookKey, true);
+
+        performanceMonitor.logMemoryUsage('after-open-book');
+        const duration = endMeasure();
+        console.log(`[Performance] Book opened successfully in ${duration.toFixed(2)}ms`);
+      } catch (error) {
+        endMeasure();
+        console.error('[FoliateViewer] Failed to open book:', error);
+        setLoading(false);
+        throw error;
       }
-      setViewInited(bookKey, true);
     };
 
-    openBook();
+    openBook().catch((error) => {
+      console.error('[FoliateViewer] Unhandled error in openBook:', error);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

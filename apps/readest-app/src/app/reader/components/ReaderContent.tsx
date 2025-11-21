@@ -21,6 +21,8 @@ import { eventDispatcher } from '@/utils/event';
 import { navigateToLibrary } from '@/utils/nav';
 import { BOOK_IDS_SEPARATOR } from '@/services/constants';
 import { BookDetailModal } from '@/components/metadata';
+import { usePerformanceMonitoring } from '@/hooks/usePerformanceMonitoring';
+import { performanceMonitor } from '@/utils/performance';
 
 import useBooksManager from '../hooks/useBooksManager';
 import useBookShortcuts from '../hooks/useBookShortcuts';
@@ -36,12 +38,21 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   const { bookKeys, dismissBook, getNextBookKey } = useBooksManager();
   const { sideBarBookKey, setSideBarBookKey } = useSidebarStore();
   const { saveSettings } = useSettingsStore();
-  const { getConfig, getBookData, saveConfig } = useBookDataStore();
+  const { getConfig, getBookData, saveConfig, clearUnusedBookData, removeBookData } =
+    useBookDataStore();
   const { getView, setBookKeys, getViewSettings } = useReaderStore();
   const { initViewState, getViewState, clearViewState } = useReaderStore();
   const [showDetailsBook, setShowDetailsBook] = useState<Book | null>(null);
   const isInitiating = useRef(false);
   const [loading, setLoading] = useState(false);
+
+  // Enable performance monitoring
+  usePerformanceMonitoring({
+    enableFreezeDetection: true,
+    enableLongTaskDetection: true,
+    enableMemoryWarnings: true,
+    memoryCheckInterval: 30000, // Check every 30 seconds
+  });
 
   useBookShortcuts({ sideBarBookKey, bookKeys });
 
@@ -86,6 +97,10 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
       const settings = useSettingsStore.getState().settings;
       settings.lastOpenBooks = bookKeys.map((key) => key.split('-')[0]!);
       saveSettings(envConfig, settings);
+
+      // Clean up unused book data periodically
+      const activeIds = bookKeys.map((key) => key.split('-')[0]!);
+      clearUnusedBookData(activeIds);
     }
 
     let unlistenOnCloseWindow: Promise<UnlistenFn>;
@@ -120,6 +135,8 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
 
   const saveConfigAndCloseBook = async (bookKey: string) => {
     console.log('Closing book', bookKey);
+    const id = bookKey.split('-')[0]!;
+
     try {
       getView(bookKey)?.close();
       getView(bookKey)?.remove();
@@ -129,6 +146,15 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     eventDispatcher.dispatch('tts-stop', { bookKey });
     await saveBookConfig(bookKey);
     clearViewState(bookKey);
+
+    // Clean up book data if no other views are using it
+    const allBookKeys = useReaderStore.getState().bookKeys;
+    const stillInUse = allBookKeys.some((key) => key.startsWith(id) && key !== bookKey);
+    if (!stillInUse) {
+      console.log(`[Memory] Removing book data for ${id}`);
+      removeBookData(id);
+      performanceMonitor.requestGC();
+    }
   };
 
   const navigateBackToLibrary = () => {

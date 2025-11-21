@@ -27,6 +27,8 @@ interface BookDataState {
   ) => void;
   updateBooknotes: (key: string, booknotes: BookNote[]) => BookConfig | undefined;
   getBookData: (keyOrId: string) => BookData | null;
+  removeBookData: (id: string) => void;
+  clearUnusedBookData: (activeIds: string[]) => void;
 }
 
 export const useBookDataStore = create<BookDataState>((set, get) => ({
@@ -109,5 +111,34 @@ export const useBookDataStore = create<BookDataState>((set, get) => ({
       };
     });
     return updatedConfig;
+  },
+  removeBookData: (id: string) => {
+    set((state) => {
+      const newBooksData = { ...state.booksData };
+      delete newBooksData[id];
+      return { booksData: newBooksData };
+    });
+  },
+  clearUnusedBookData: (activeIds: string[]) => {
+    set((state) => {
+      const activeIdSet = new Set(activeIds);
+      const newBooksData: { [id: string]: BookData } = {};
+
+      Object.keys(state.booksData).forEach((id) => {
+        if (activeIdSet.has(id)) {
+          newBooksData[id] = state.booksData[id]!;
+        } else {
+          // Clean up file handles if necessary
+          const bookData = state.booksData[id];
+          if (bookData?.file && typeof (bookData.file as any).close === 'function') {
+            (bookData.file as any).close().catch((e: Error) => {
+              console.warn(`Failed to close file for book ${id}:`, e);
+            });
+          }
+        }
+      });
+
+      return { booksData: newBooksData };
+    });
   },
 }));

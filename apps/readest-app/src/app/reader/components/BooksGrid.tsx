@@ -11,6 +11,7 @@ import { useTranslation } from '@/hooks/useTranslation';
 import { getGridTemplate, getInsetEdges } from '@/utils/grid';
 import { getViewInsets } from '@/utils/insets';
 import SettingsDialog from '@/components/settings/SettingsDialog';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import FoliateViewer from './FoliateViewer';
 import SectionInfo from './SectionInfo';
 import HeaderBar from './HeaderBar';
@@ -124,14 +125,21 @@ const BooksGrid: React.FC<BooksGridProps> = ({ bookKeys, onCloseBook }) => {
               onCloseBook={onCloseBook}
               gridInsets={gridInsets}
             />
-            <FoliateViewer
-              key={viewerKey}
-              bookKey={bookKey}
-              bookDoc={bookDoc}
-              config={config}
-              gridInsets={gridInsets}
-              contentInsets={contentInsets}
-            />
+            <ErrorBoundary
+              resetKeys={[viewerKey]}
+              onError={(error, errorInfo) => {
+                console.error(`[BooksGrid] Error in book viewer ${bookKey}:`, error, errorInfo);
+              }}
+            >
+              <FoliateViewer
+                key={viewerKey}
+                bookKey={bookKey}
+                bookDoc={bookDoc}
+                config={config}
+                gridInsets={gridInsets}
+                contentInsets={contentInsets}
+              />
+            </ErrorBoundary>
             {viewSettings.vertical && viewSettings.scrolled && (
               <>
                 {(showFooter || viewSettings.doubleBorder) && (

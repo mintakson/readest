@@ -21,6 +21,7 @@ import { useSettingsStore } from './settingsStore';
 import { useBookDataStore } from './bookDataStore';
 import { useLibraryStore } from './libraryStore';
 import { uniqueId } from '@/utils/misc';
+import { performanceMonitor } from '@/utils/performance';
 
 interface ViewState {
   /* Unique key for each book view */
@@ -121,6 +122,8 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
     isPrimary = true,
     reload = false,
   ) => {
+    const endMeasure = performanceMonitor.startMeasure(`init-view-${key}`);
+
     const booksData = useBookDataStore.getState().booksData;
     const bookData = booksData[id];
     set((state) => ({
@@ -143,95 +146,134 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
         },
       },
     }));
-    try {
-      const { settings } = useSettingsStore.getState();
-      if (!bookData || reload) {
-        const appService = await envConfig.getAppService();
-        const { library } = useLibraryStore.getState();
-        const book = library.find((b) => b.hash === id);
-        if (!book) {
-          throw new Error('Book not found');
-        }
-        const content = (await appService.loadBookContent(book, settings)) as BookContent;
-        const { file, config } = content;
-        console.log('Loading book', key);
-        const { book: bookDoc } = await new DocumentLoader(file).open();
-        updateToc(bookDoc, config.viewSettings?.sortedTOC ?? false);
-        if (!bookDoc.metadata.title) {
-          bookDoc.metadata.title = getBaseFilename(file.name);
-        }
-        book.sourceTitle = formatTitle(bookDoc.metadata.title);
-        // Correct language codes mistakenly set with language names
-        if (typeof bookDoc.metadata?.language === 'string') {
-          if (bookDoc.metadata.language in SUPPORTED_LANGNAMES) {
-            bookDoc.metadata.language = SUPPORTED_LANGNAMES[bookDoc.metadata.language]!;
-          }
-        }
-        // Set the book's language for formerly imported books, newly imported books have this field set
-        const primaryLanguage = getPrimaryLanguage(bookDoc.metadata.language);
-        book.primaryLanguage = book.primaryLanguage ?? primaryLanguage;
-        book.metadata = book.metadata ?? bookDoc.metadata;
-        // TODO: uncomment this when we can ensure metaHash is correctly generated for all books
-        // book.metaHash = book.metaHash ?? getMetadataHash(bookDoc.metadata);
-        book.metaHash = getMetadataHash(bookDoc.metadata);
 
-        const isFixedLayout = FIXED_LAYOUT_FORMATS.has(book.format);
-        useBookDataStore.setState((state) => ({
-          booksData: {
-            ...state.booksData,
-            [id]: { id, book, file, config, bookDoc, isFixedLayout },
+    let retries = 0;
+    const maxRetries = 2;
+
+    const attemptLoad = async (): Promise<void> => {
+      try {
+        const { settings } = useSettingsStore.getState();
+        if (!bookData || reload) {
+          const appService = await envConfig.getAppService();
+          const { library } = useLibraryStore.getState();
+          const book = library.find((b) => b.hash === id);
+          if (!book) {
+            throw new Error('Book not found in library');
+          }
+
+          // Check memory before loading
+          if (performanceMonitor.isMemoryCritical()) {
+            console.warn(
+              '[Performance] Memory usage is high. Attempting to free memory before loading book.',
+            );
+            // Request garbage collection if available
+            performanceMonitor.requestGC();
+            // Wait a bit for GC to complete
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+
+          const content = (await appService.loadBookContent(book, settings)) as BookContent;
+          const { file, config } = content;
+          console.log('Loading book', key);
+
+          // Parse book document with performance tracking
+          const { book: bookDoc } = await new DocumentLoader(file).open();
+
+          updateToc(bookDoc, config.viewSettings?.sortedTOC ?? false);
+          if (!bookDoc.metadata.title) {
+            bookDoc.metadata.title = getBaseFilename(file.name);
+          }
+          book.sourceTitle = formatTitle(bookDoc.metadata.title);
+          // Correct language codes mistakenly set with language names
+          if (typeof bookDoc.metadata?.language === 'string') {
+            if (bookDoc.metadata.language in SUPPORTED_LANGNAMES) {
+              bookDoc.metadata.language = SUPPORTED_LANGNAMES[bookDoc.metadata.language]!;
+            }
+          }
+          // Set the book's language for formerly imported books, newly imported books have this field set
+          const primaryLanguage = getPrimaryLanguage(bookDoc.metadata.language);
+          book.primaryLanguage = book.primaryLanguage ?? primaryLanguage;
+          book.metadata = book.metadata ?? bookDoc.metadata;
+          // TODO: uncomment this when we can ensure metaHash is correctly generated for all books
+          // book.metaHash = book.metaHash ?? getMetadataHash(bookDoc.metadata);
+          book.metaHash = getMetadataHash(bookDoc.metadata);
+
+          const isFixedLayout = FIXED_LAYOUT_FORMATS.has(book.format);
+          useBookDataStore.setState((state) => ({
+            booksData: {
+              ...state.booksData,
+              [id]: { id, book, file, config, bookDoc, isFixedLayout },
+            },
+          }));
+        }
+        const booksData = useBookDataStore.getState().booksData;
+        const config = booksData[id]?.config as BookConfig;
+        const configViewSettings = config.viewSettings!;
+        const globalViewSettings = settings.globalViewSettings;
+        set((state) => ({
+          viewStates: {
+            ...state.viewStates,
+            [key]: {
+              ...state.viewStates[key],
+              key,
+              view: null,
+              viewerKey: `${key}-${uniqueId()}`,
+              isPrimary,
+              loading: false,
+              inited: false,
+              error: null,
+              progress: null,
+              ribbonVisible: false,
+              ttsEnabled: false,
+              syncing: false,
+              gridInsets: null,
+              viewSettings: { ...globalViewSettings, ...configViewSettings },
+            },
+          },
+        }));
+
+        endMeasure();
+        performanceMonitor.logMemoryUsage('after-init-view');
+      } catch (error) {
+        console.error('[ReaderStore] Failed to initialize view:', error);
+
+        // Retry logic for transient errors
+        if (retries < maxRetries) {
+          retries++;
+          console.log(`[ReaderStore] Retrying (${retries}/${maxRetries})...`);
+          await new Promise((resolve) => setTimeout(resolve, 1000 * retries));
+          return attemptLoad();
+        }
+
+        // Final error state
+        endMeasure();
+        const errorMessage = error instanceof Error ? error.message : 'Failed to load book.';
+
+        set((state) => ({
+          viewStates: {
+            ...state.viewStates,
+            [key]: {
+              ...state.viewStates[key],
+              key: '',
+              view: null,
+              viewerKey: '',
+              isPrimary: false,
+              loading: false,
+              inited: false,
+              error: errorMessage,
+              progress: null,
+              ribbonVisible: false,
+              ttsEnabled: false,
+              syncing: false,
+              gridInsets: null,
+              viewSettings: null,
+            },
           },
         }));
       }
-      const booksData = useBookDataStore.getState().booksData;
-      const config = booksData[id]?.config as BookConfig;
-      const configViewSettings = config.viewSettings!;
-      const globalViewSettings = settings.globalViewSettings;
-      set((state) => ({
-        viewStates: {
-          ...state.viewStates,
-          [key]: {
-            ...state.viewStates[key],
-            key,
-            view: null,
-            viewerKey: `${key}-${uniqueId()}`,
-            isPrimary,
-            loading: false,
-            inited: false,
-            error: null,
-            progress: null,
-            ribbonVisible: false,
-            ttsEnabled: false,
-            syncing: false,
-            gridInsets: null,
-            viewSettings: { ...globalViewSettings, ...configViewSettings },
-          },
-        },
-      }));
-    } catch (error) {
-      console.error(error);
-      set((state) => ({
-        viewStates: {
-          ...state.viewStates,
-          [key]: {
-            ...state.viewStates[key],
-            key: '',
-            view: null,
-            viewerKey: '',
-            isPrimary: false,
-            loading: false,
-            inited: false,
-            error: 'Failed to load book.',
-            progress: null,
-            ribbonVisible: false,
-            ttsEnabled: false,
-            syncing: false,
-            gridInsets: null,
-            viewSettings: null,
-          },
-        },
-      }));
-    }
+    };
+
+    await attemptLoad();
   },
   getViewSettings: (key: string) => get().viewStates[key]?.viewSettings || null,
   setViewSettings: (key: string, viewSettings: ViewSettings) => {
