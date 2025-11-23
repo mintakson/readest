@@ -167,9 +167,10 @@ export const handleClick = (
 };
 
 const handleTouchEv = (bookKey: string, event: TouchEvent, type: string) => {
-  const touch = event.targetTouches[0];
   const touches = [];
-  if (touch) {
+  // Capture all touches for multi-touch gestures (e.g., pinch-to-zoom)
+  for (let i = 0; i < event.targetTouches.length; i++) {
+    const touch = event.targetTouches[i];
     touches.push({
       clientX: touch.clientX,
       clientY: touch.clientY,

@@ -8,6 +8,7 @@ import { useDeviceControlStore } from '@/store/deviceStore';
 import { eventDispatcher } from '@/utils/event';
 import { isTauriAppPlatform } from '@/services/environment';
 import { tauriGetWindowLogicalPosition } from '@/utils/window';
+import { MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL } from '@/services/constants';
 
 export type ScrollSource = 'touch' | 'mouse';
 
@@ -82,6 +83,22 @@ export const usePagination = (
     if (msg instanceof MessageEvent) {
       if (msg.data && msg.data.bookKey === bookKey) {
         const viewSettings = getViewSettings(bookKey)!;
+        // Handle pinch-to-zoom event
+        if (msg.data.type === 'iframe-pinch-zoom') {
+          const requestedZoom = msg.data.zoomLevel;
+          const clampedZoom = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, requestedZoom));
+
+          if (clampedZoom !== viewSettings.zoomLevel) {
+            viewSettings.zoomLevel = clampedZoom;
+            viewSettings.zoomMode = 'custom';
+            setViewSettings(bookKey, viewSettings);
+
+            if (bookData?.bookDoc?.rendition?.layout === 'pre-paginated') {
+              viewRef.current?.renderer.setAttribute('scale-factor', clampedZoom);
+            }
+          }
+          return;
+        }
         if (msg.data.type === 'iframe-single-click') {
           const viewElement = containerRef.current;
           if (viewElement) {

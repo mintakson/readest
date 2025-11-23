@@ -71,15 +71,73 @@ export const useTouchEvent = (
   const touchStartTimeRef = useRef<number | null>(null);
   const touchEndTimeRef = useRef<number | null>(null);
 
+  // Pinch-to-zoom state
+  const initialPinchDistanceRef = useRef<number | null>(null);
+  const currentPinchDistanceRef = useRef<number | null>(null);
+  const initialZoomLevelRef = useRef<number>(100);
+  const isPinchingRef = useRef<boolean>(false);
+
+  // Calculate distance between two touch points for pinch gesture
+  const calculateDistance = (touch1: IframeTouch, touch2: IframeTouch): number => {
+    const dx = touch2.screenX - touch1.screenX;
+    const dy = touch2.screenY - touch1.screenY;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+
   const onTouchStart = (e: IframeTouchEvent | React.TouchEvent<HTMLDivElement>) => {
     const touch = e.targetTouches[0];
     if (!touch) return;
     touchStartRef.current = touch;
     touchStartTimeRef.current = 'timeStamp' in e ? e.timeStamp : Date.now();
+
+    // Check for pinch gesture (two fingers)
+    if (e.targetTouches.length === 2) {
+      const bookData = getBookData(bookKey);
+      const viewSettings = getViewSettings(bookKey);
+
+      // Only enable pinch-to-zoom for fixed layout (PDF, CBZ)
+      if (bookData?.isFixedLayout && viewSettings) {
+        isPinchingRef.current = true;
+        initialPinchDistanceRef.current = calculateDistance(
+          e.targetTouches[0],
+          e.targetTouches[1],
+        );
+        initialZoomLevelRef.current = viewSettings.zoomLevel;
+      }
+    } else {
+      // Reset pinch state when not two fingers
+      isPinchingRef.current = false;
+      initialPinchDistanceRef.current = null;
+      currentPinchDistanceRef.current = null;
+    }
   };
 
   const onTouchMove = (e: IframeTouchEvent | React.TouchEvent<HTMLDivElement>) => {
     if (!touchStartRef.current) return;
+
+    // Handle pinch-to-zoom gesture
+    if (isPinchingRef.current && e.targetTouches.length === 2) {
+      const currentDistance = calculateDistance(e.targetTouches[0], e.targetTouches[1]);
+      currentPinchDistanceRef.current = currentDistance;
+
+      if (initialPinchDistanceRef.current && currentDistance > 0) {
+        // Calculate zoom scale based on pinch distance change
+        const scale = currentDistance / initialPinchDistanceRef.current;
+        const newZoomLevel = Math.round(initialZoomLevelRef.current * scale);
+
+        // Dispatch pinch-zoom event to be handled by usePagination
+        window.postMessage(
+          {
+            type: 'iframe-pinch-zoom',
+            bookKey,
+            zoomLevel: newZoomLevel,
+          },
+          '*',
+        );
+      }
+      return; // Don't process regular touch events during pinch
+    }
+
     const touch = e.targetTouches[0];
     if (touch) {
       touchEndRef.current = touch;
@@ -108,6 +166,16 @@ export const useTouchEvent = (
     if (touch) {
       touchEndRef.current = touch;
       touchEndTimeRef.current = 'timeStamp' in e ? e.timeStamp : Date.now();
+    }
+
+    // If we were pinching, reset the state and don't process other gestures
+    if (isPinchingRef.current) {
+      isPinchingRef.current = false;
+      initialPinchDistanceRef.current = null;
+      currentPinchDistanceRef.current = null;
+      touchStartRef.current = null;
+      touchEndRef.current = null;
+      return;
     }
 
     const windowWidth = window.innerWidth;
