@@ -3,6 +3,8 @@ import { useReaderStore } from '@/store/readerStore';
 import { useBookDataStore } from '@/store/bookDataStore';
 import { debounce } from '@/utils/debounce';
 import { ScrollSource } from './usePagination';
+import { useEnv } from '@/context/EnvContext';
+import { saveViewSettings } from '@/helpers/settings';
 
 export const useMouseEvent = (
   bookKey: string,
@@ -63,24 +65,101 @@ export const useTouchEvent = (
   handlePageFlip: (msg: CustomEvent) => void,
   handleContinuousScroll: (source: ScrollSource, delta: number, threshold: number) => void,
 ) => {
+  const { envConfig } = useEnv();
   const { getBookData } = useBookDataStore();
-  const { hoveredBookKey, setHoveredBookKey, getViewSettings } = useReaderStore();
+  const { hoveredBookKey, setHoveredBookKey, getViewSettings, getView, setViewSettings } = useReaderStore();
 
   const touchStartRef = useRef<IframeTouch | null>(null);
   const touchEndRef = useRef<IframeTouch | null>(null);
   const touchStartTimeRef = useRef<number | null>(null);
   const touchEndTimeRef = useRef<number | null>(null);
 
+  // Pinch-to-zoom state
+  const initialPinchDistanceRef = useRef<number | null>(null);
+  const initialZoomLevelRef = useRef<number | null>(null);
+  const isPinchingRef = useRef<boolean>(false);
+  const lastZoomSaveRef = useRef<number>(Date.now());
+
+  // Calculate distance between two touch points
+  const getDistance = (touch1: IframeTouch, touch2: IframeTouch): number => {
+    const dx = touch2.screenX - touch1.screenX;
+    const dy = touch2.screenY - touch1.screenY;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+
+  // Apply zoom level with constraints (50% - 500%)
+  const applyZoom = (newZoomLevel: number, persist: boolean = false) => {
+    const viewSettings = getViewSettings(bookKey);
+    const bookData = getBookData(bookKey);
+    if (!viewSettings || !bookData || !bookData.isFixedLayout) return;
+
+    // Clamp zoom level between 50 and 500
+    const clampedZoom = Math.max(50, Math.min(500, Math.round(newZoomLevel)));
+
+    viewSettings.zoomLevel = clampedZoom;
+    viewSettings.zoomMode = 'custom';
+    setViewSettings(bookKey, viewSettings);
+
+    const view = getView(bookKey);
+    view?.renderer.setAttribute('scale-factor', clampedZoom);
+    view?.renderer.setAttribute('zoom', 'custom');
+
+    // Persist zoom level (debounced during continuous pinch gestures)
+    if (persist) {
+      const now = Date.now();
+      // Only save every 500ms during continuous zooming to avoid excessive writes
+      if (now - lastZoomSaveRef.current > 500) {
+        saveViewSettings(envConfig, bookKey, 'zoomLevel', clampedZoom, true, false);
+        saveViewSettings(envConfig, bookKey, 'zoomMode', 'custom', true, false);
+        lastZoomSaveRef.current = now;
+      }
+    }
+  };
+
   const onTouchStart = (e: IframeTouchEvent | React.TouchEvent<HTMLDivElement>) => {
-    const touch = e.targetTouches[0];
-    if (!touch) return;
+    const touches = e.targetTouches;
+    if (!touches || touches.length === 0) return;
+
+    const touch = touches[0];
     touchStartRef.current = touch;
     touchStartTimeRef.current = 'timeStamp' in e ? e.timeStamp : Date.now();
+
+    // Detect pinch gesture (two fingers)
+    if (touches.length === 2) {
+      const bookData = getBookData(bookKey);
+      const viewSettings = getViewSettings(bookKey);
+
+      // Only enable pinch-to-zoom for fixed layout books (PDF, CBZ)
+      if (bookData?.isFixedLayout && viewSettings) {
+        isPinchingRef.current = true;
+        initialPinchDistanceRef.current = getDistance(touches[0], touches[1]);
+        initialZoomLevelRef.current = viewSettings.zoomLevel;
+      }
+    } else {
+      isPinchingRef.current = false;
+    }
   };
 
   const onTouchMove = (e: IframeTouchEvent | React.TouchEvent<HTMLDivElement>) => {
     if (!touchStartRef.current) return;
-    const touch = e.targetTouches[0];
+
+    const touches = e.targetTouches;
+    if (!touches || touches.length === 0) return;
+
+    // Handle pinch-to-zoom for two-finger gestures
+    if (isPinchingRef.current && touches.length === 2) {
+      const currentDistance = getDistance(touches[0], touches[1]);
+
+      if (initialPinchDistanceRef.current && initialZoomLevelRef.current) {
+        // Calculate zoom scale based on distance change
+        const scale = currentDistance / initialPinchDistanceRef.current;
+        const newZoomLevel = initialZoomLevelRef.current * scale;
+        applyZoom(newZoomLevel, true); // Apply and persist zoom
+      }
+      return; // Don't process other touch gestures during pinch
+    }
+
+    const touch = touches[0];
     if (touch) {
       touchEndRef.current = touch;
       touchEndTimeRef.current = 'timeStamp' in e ? e.timeStamp : Date.now();
@@ -103,6 +182,23 @@ export const useTouchEvent = (
 
   const onTouchEnd = (e: IframeTouchEvent | React.TouchEvent<HTMLDivElement>) => {
     if (!touchStartRef.current) return;
+
+    // If pinch gesture just ended, save final zoom level and reset state
+    if (isPinchingRef.current) {
+      // Save the final zoom level immediately when pinch ends
+      const viewSettings = getViewSettings(bookKey);
+      if (viewSettings) {
+        saveViewSettings(envConfig, bookKey, 'zoomLevel', viewSettings.zoomLevel, true, false);
+        saveViewSettings(envConfig, bookKey, 'zoomMode', 'custom', true, false);
+      }
+
+      isPinchingRef.current = false;
+      initialPinchDistanceRef.current = null;
+      initialZoomLevelRef.current = null;
+      touchStartRef.current = null;
+      touchEndRef.current = null;
+      return;
+    }
 
     const touch = e.targetTouches[0];
     if (touch) {
